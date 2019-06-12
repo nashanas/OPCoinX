@@ -20,8 +20,13 @@
 #include "utiltime.h"
 
 #include <stdarg.h>
+#include <stdint.h>
 
+#include <boost/algorithm/string/split.hpp>
+#include <boost/algorithm/string/trim.hpp>
+#include <boost/algorithm/string/classification.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
+
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
 #include <openssl/crypto.h> // for OPENSSL_cleanse()
@@ -105,20 +110,26 @@ std::string to_internal(const std::string&);
 
 using namespace std;
 
-//OPCX only features
+// OPCX only features
+// Masternode
 bool fMasterNode = false;
 string strMasterNodePrivKey = "";
 string strMasterNodeAddr = "";
 bool fLiteMode = false;
+// SwiftX
 bool fEnableSwiftTX = true;
 int nSwiftTXDepth = 5;
-int nObfuscationRounds = 2;
+// Automatic Zerocoin minting
+bool fEnableZeromint = true;
+int nZeromintPercentage = 10;
+int nPreferredDenom = 0;
+const int64_t AUTOMINT_DELAY = (60 * 5); // Wait at least 5 minutes until Automint starts
+
 int nAnonymizePivxAmount = 1000;
 int nLiquidityProvider = 0;
 /** Spork enforcement enabled time */
 int64_t enforceMasternodePaymentsTime = 4085657524;
 bool fSucessfullyLoaded = false;
-bool fEnableObfuscation = false;
 /** All denominations used by obfuscation */
 std::vector<int64_t> obfuScationDenominations;
 string strBudgetMode = "";
@@ -137,7 +148,7 @@ volatile bool fReopenDebugLog = false;
 
 /** Init OpenSSL library multithreading support */
 static CCriticalSection** ppmutexOpenSSL;
-void locking_callback(int mode, int i, const char* file, int line) NO_THREAD_SAFETY_ANALYSIS
+void locking_callback(int mode, int i, const char* file, int line)
 {
     if (mode & CRYPTO_LOCK) {
         ENTER_CRITICAL_SECTION(*ppmutexOpenSSL[i]);
@@ -234,9 +245,10 @@ bool LogAcceptCategory(const char* category)
             // "opcx" is a composite category enabling all OPCoinX-related debug output
             if (ptrCategory->count(string("opcx"))) {
                 ptrCategory->insert(string("obfuscation"));
-                ptrCategory->insert(string("swifttx"));
+                ptrCategory->insert(string("swiftx"));
                 ptrCategory->insert(string("masternode"));
                 ptrCategory->insert(string("mnpayments"));
+                ptrCategory->insert(string("zero"));
                 ptrCategory->insert(string("mnbudget"));
             }
         }
@@ -336,6 +348,12 @@ void ParseParameters(int argc, const char* const argv[])
         mapArgs[str] = strValue;
         mapMultiArgs[str].push_back(strValue);
     }
+}
+
+bool DefinedArg(const std::string& strArg)
+{
+    assert(!strArg.empty());
+    return mapArgs.find(strArg) != mapArgs.end();
 }
 
 std::string GetArg(const std::string& strArg, const std::string& strDefault)
@@ -731,6 +749,26 @@ boost::filesystem::path GetTempPath()
 #endif
 }
 
+double double_safe_addition(double fValue, double fIncrement)
+{
+    double fLimit = std::numeric_limits<double>::max() - fValue;
+
+    if (fLimit > fIncrement)
+        return fValue + fIncrement;
+    else
+        return std::numeric_limits<double>::max();
+}
+
+double double_safe_multiplication(double fValue, double fmultiplicator)
+{
+    double fLimit = std::numeric_limits<double>::max() / fmultiplicator;
+
+    if (fLimit > fmultiplicator)
+        return fValue * fmultiplicator;
+    else
+        return std::numeric_limits<double>::max();
+}
+
 void runCommand(std::string strCommand)
 {
     int nErr = ::system(strCommand.c_str());
@@ -781,6 +819,18 @@ void SetupEnvironment()
     boost::filesystem::path::imbue(loc);
 }
 
+bool SetupNetworking()
+{
+#ifdef WIN32
+    // Initialize Windows Sockets
+    WSADATA wsadata;
+    int ret = WSAStartup(MAKEWORD(2,2), &wsadata);
+    if (ret != NO_ERROR || LOBYTE(wsadata.wVersion ) != 2 || HIBYTE(wsadata.wVersion) != 2)
+        return false;
+#endif
+    return true;
+}
+
 void SetThreadPriority(int nPriority)
 {
 #ifdef WIN32
@@ -792,4 +842,140 @@ void SetThreadPriority(int nPriority)
     setpriority(PRIO_PROCESS, 0, nPriority);
 #endif // PRIO_THREAD
 #endif // WIN32
+}
+
+bool FindUpdateUrlForThisPlatform(const std::string& info, std::string& url, std::string& error)
+{
+    if (info.empty()) {
+        error = "info is empty";
+        return false;
+    }
+
+    string platform;
+
+#if defined(WIN32)
+  #if (INTPTR_MAX == INT64_MAX)
+    platform = "win64";
+  #else
+    platform = "win32";
+  #endif
+#elif defined(MAC_OSX)
+    platform = "osx";
+#elif defined(__linux__)
+  #if defined(__arm__)
+    #if (INTPTR_MAX == INT64_MAX)
+      platform = "aarch64";
+    #else
+      platform = "arm";
+    #endif
+  #else
+    #if (INTPTR_MAX == INT64_MAX)
+      platform = "linux64";
+    #else
+      platform = "linux32";
+    #endif
+  #endif
+#else
+    #error "unknown platform OS"
+#endif
+
+    DebugPrintf("%s: %s platform detected\n", __func__, platform);
+
+    vector<string> lines;
+    boost::algorithm::split(lines, info, boost::algorithm::is_any_of("\n"));
+    for (string line : lines) {
+        vector<string> platformurl;
+        boost::algorithm::trim(line);
+        boost::algorithm::split(platformurl, line, boost::algorithm::is_any_of("="));
+        if (platformurl.size() != 2) {
+            LogPrintf("%s: invalid line: %s\n", __func__, line);
+        } else if (platformurl.front() == platform) {
+            url = platformurl.back();
+            return true;
+        }
+        else; // continue search
+    }
+
+    error = strprintf("Platform %s was not found in the input: %s", platform, info);
+    return false;
+}
+
+static boost::filesystem::path GetDefaultDataDirLegacy()
+{
+    namespace fs = boost::filesystem;
+// Windows < Vista: C:\Documents and Settings\Username\Application Data\OPCoinX
+// Windows >= Vista: C:\Users\Username\AppData\Roaming\OPCoinX
+// Mac: ~/Library/Application Support/OPCoinX
+// Unix: ~/.opcx
+#ifdef WIN32
+    // Windows
+    return GetSpecialFolderPath(CSIDL_APPDATA) / "OPCoinX";
+#else
+    fs::path pathRet;
+    char* pszHome = getenv("HOME");
+    if (pszHome == NULL || strlen(pszHome) == 0)
+        pathRet = fs::path("/");
+    else
+        pathRet = fs::path(pszHome);
+#ifdef MAC_OSX
+    // Mac
+    pathRet /= "Library/Application Support";
+    TryCreateDirectory(pathRet);
+    return pathRet / "OPCoinX";
+#else
+    // Unix
+    return pathRet / ".OPCoinX";
+#endif
+#endif
+}
+
+static void RenameDataDir()
+{
+    namespace fs = boost::filesystem;
+    if (fs::exists(GetDefaultDataDir()))
+        return; // new data dir exists - skip renaming
+
+    fs::path dataDirLegacy = GetDefaultDataDirLegacy();
+    if (fs::exists(dataDirLegacy))
+        fs::rename(dataDirLegacy, GetDefaultDataDir());
+}
+
+static void RenameConfigFile()
+{
+    namespace fs = boost::filesystem;
+    fs::path configFile = GetDefaultDataDir() / fs::path("OPCoinX.conf");
+    if (fs::exists(configFile))
+        return; // new config file exists - skip renaming
+
+    fs::path configFileLegacy = GetDefaultDataDir() / fs::path("OPCoinX.conf");
+    if (fs::exists(configFileLegacy))
+        fs::rename(configFileLegacy, configFile);
+}
+
+void RenameDataDirAndConfFile()
+{
+    RenameDataDir();
+    RenameConfigFile();
+}
+
+/** convert size to the human readable string */
+std::string HumanReadableSize(int64_t size, bool si)
+{
+    const int unit = si ? 1000 : 1024;
+    const char* units1[] = {"B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"};
+    const char* units2[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"};
+    const char** units = si ? units1 : units2;
+
+    static_assert((sizeof(units1) / sizeof(units1[0])) == (sizeof(units2) / sizeof(units2[0])), "Number of elements in units1 and units2 must be equal.");
+
+    int i = 0;
+    while (size > unit) {
+       size /= unit;
+       i += 1;
+    }
+
+    if (size <= 0 || i >= sizeof(units1) / sizeof(units1[0]))
+        return "0";
+    else
+        return strprintf("%.*f %s", i, size, units[i]);
 }

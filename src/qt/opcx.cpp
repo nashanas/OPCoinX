@@ -8,6 +8,7 @@
 #include "config/opcx-config.h"
 #endif
 
+#include "context.h"
 #include "bitcoingui.h"
 
 #include "clientmodel.h"
@@ -20,6 +21,8 @@
 #include "splashscreen.h"
 #include "utilitydialog.h"
 #include "winshutdownmonitor.h"
+#include "bootstrapdialog.h"
+#include "bootstrapmodel.h"
 
 #ifdef ENABLE_WALLET
 #include "paymentserver.h"
@@ -30,6 +33,7 @@
 #include "init.h"
 #include "main.h"
 #include "rpcserver.h"
+#include "scheduler.h"
 #include "ui_interface.h"
 #include "util.h"
 
@@ -52,6 +56,9 @@
 #include <QThread>
 #include <QTimer>
 #include <QTranslator>
+#include <QFileInfo>
+#include <QString>
+#include <QFontDatabase>
 
 #if defined(QT_STATICPLUGIN)
 #include <QtPlugin>
@@ -186,6 +193,7 @@ signals:
 
 private:
     boost::thread_group threadGroup;
+    CScheduler scheduler;
 
     /// Flag indicating a restart
     bool execute_restart;
@@ -270,13 +278,7 @@ void BitcoinCore::initialize()
 
     try {
         qDebug() << __func__ << ": Running AppInit2 in thread";
-        int rv = AppInit2(threadGroup);
-        if (rv) {
-            /* Start a dummy RPC thread if no RPC thread is active yet
-             * to handle timeouts.
-             */
-            StartDummyRPCThread();
-        }
+        int rv = AppInit2(threadGroup, scheduler);
         emit initializeResult(rv);
     } catch (std::exception& e) {
         handleRunawayException(&e);
@@ -291,7 +293,7 @@ void BitcoinCore::restart(QStringList args)
         execute_restart = false;
         try {
             qDebug() << __func__ << ": Running Restart in thread";
-            threadGroup.interrupt_all();
+            Interrupt(threadGroup);
             threadGroup.join_all();
             PrepareShutdown();
             qDebug() << __func__ << ": Shutdown finished";
@@ -312,7 +314,7 @@ void BitcoinCore::shutdown()
 {
     try {
         qDebug() << __func__ << ": Running Shutdown in thread";
-        threadGroup.interrupt_all();
+        Interrupt(threadGroup);
         threadGroup.join_all();
         Shutdown();
         qDebug() << __func__ << ": Shutdown finished";
@@ -513,14 +515,20 @@ WId BitcoinApplication::getMainWinId() const
 {
     if (!window)
         return 0;
-
-    return window->winId();
+    else
+        return window->winId();
 }
 
 #ifndef BITCOIN_QT_TEST
 int main(int argc, char* argv[])
 {
+    ContextScopeInit context;
+
+    // Locale
     SetupEnvironment();
+
+    // Rebranding if needed
+    RenameDataDirAndConfFile();
 
     /// 1. Parse command-line options. These take precedence over anything else.
     // Command-line options take precedence:
@@ -562,6 +570,22 @@ int main(int argc, char* argv[])
     QApplication::setOrganizationName(QAPP_ORG_NAME);
     QApplication::setOrganizationDomain(QAPP_ORG_DOMAIN);
     QApplication::setApplicationName(QAPP_APP_NAME_DEFAULT);
+
+    QFile res(":/fonts/share-tech-mono-v7-latin-regular");
+    if (res.open(QIODevice::ReadOnly) == false)
+        QMessageBox::warning(0, QObject::tr("OPCoinX Core"), QObject::tr("Loading OPCoinX font file failed"));
+    else {
+        int id = QFontDatabase::addApplicationFontFromData(res.readAll());
+        if (id == -1)
+            QMessageBox::warning(0, QObject::tr("OPCoinX Core"), QObject::tr("Loading OPCoinX font failed"));
+        else {
+            QStringList familyList = QFontDatabase::applicationFontFamilies(id);
+            if (familyList.empty())
+                QMessageBox::warning(0, QObject::tr("OPCoinX Core"), QObject::tr("OPCoinX font list is empty"));
+            else
+                QApplication::setFont(QFont(familyList.front()));
+        }
+    }
     GUIUtil::SubstituteFonts(GetLangTerritory());
 
     /// 4. Initialization of translations, so that intro dialog is in user's language
@@ -579,8 +603,28 @@ int main(int argc, char* argv[])
     }
 
     /// 5. Now that settings and translations are available, ask user for data directory
+    // Rebranding QSettings if needed
+    try {
+        QString newSettingPath = Intro::getSettingsDirectory();
+        QString oldSettingsPath = newSettingPath;
+        oldSettingsPath.replace(QString(QAPP_ORG_NAME), QString("OPCoinX"));
+        if (!newSettingPath.isEmpty() && !oldSettingsPath.isEmpty() &&
+                QFileInfo::exists(oldSettingsPath) && !QFileInfo::exists(newSettingPath)) {
+            namespace fs = boost::filesystem;
+            const fs::path pOldSettings = GUIUtil::qstringToBoostPath(oldSettingsPath);
+            const fs::path pNewSettings = GUIUtil::qstringToBoostPath(newSettingPath);
+            fs::create_directories(pNewSettings.parent_path());
+            fs::copy(pOldSettings, pNewSettings);
+        }
+    } catch (...) {
+        assert(false);
+        // in case of errors user will have to choose data directory again,
+        // so skip error and continue
+    }
+
     // User language is set up: pick a data directory
-    if (!Intro::pickDataDirectory())
+    bool bootstrap = false;
+    if (!Intro::pickDataDirectory(bootstrap))
         return 0;
 
     /// 6. Determine availability of data directory and parse opcx.conf
@@ -595,7 +639,7 @@ int main(int argc, char* argv[])
     } catch (std::exception& e) {
         QMessageBox::critical(0, QObject::tr("OPCoinX Core"),
             QObject::tr("Error: Cannot parse configuration file: %1. Only use key=value syntax.").arg(e.what()));
-        return false;
+        return 1;
     }
 
     /// 7. Determine network (and switch to network specific options)
@@ -609,10 +653,20 @@ int main(int argc, char* argv[])
         QMessageBox::critical(0, QObject::tr("OPCoinX Core"), QObject::tr("Error: Invalid combination of -regtest and -testnet."));
         return 1;
     }
-#ifdef ENABLE_WALLET
-    // Parse URIs on command line -- this can affect Params()
-    PaymentServer::ipcParseCommandLine(argc, argv);
-#endif
+
+    // Check for bootstrap option after network is selected
+    if (bootstrap) {
+        try {
+            BootstrapDialog::bootstrapBlockchain(GetContext().GetBootstrapModel());
+        } catch (std::exception& e) {
+            QMessageBox::critical(0, QObject::tr("OPCoinX Core"),
+                QObject::tr("Bootstrap failed, error: \"%1\".\nPlease restart wallet.").arg(e.what()));
+            return 1;
+        } catch (...) {
+            QMessageBox::critical(0, QObject::tr("OPCoinX Core"), QObject::tr("Bootstrap failed, unexpected error. Please restart wallet."));
+            return 1;
+        }
+    }
 
     QScopedPointer<const NetworkStyle> networkStyle(NetworkStyle::instantiate(QString::fromStdString(Params().NetworkIDString())));
     assert(!networkStyle.isNull());
@@ -622,12 +676,17 @@ int main(int argc, char* argv[])
     initTranslations(qtTranslatorBase, qtTranslator, translatorBase, translator);
 
 #ifdef ENABLE_WALLET
+    // Parse URIs on command line -- this can affect Params()
+    PaymentServer::ipcParseCommandLine(argc, argv);
+#endif
+
+#ifdef ENABLE_WALLET
     /// 7a. parse masternode.conf
     string strErr;
     if (!masternodeConfig.read(strErr)) {
         QMessageBox::critical(0, QObject::tr("OPCoinX Core"),
             QObject::tr("Error reading masternode configuration file: %1").arg(strErr.c_str()));
-        return false;
+        return 0;
     }
 
     /// 8. URI IPC sending

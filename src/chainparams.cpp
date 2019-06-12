@@ -11,6 +11,9 @@
 #include "random.h"
 #include "util.h"
 #include "utilstrencodings.h"
+#include "base58.h"
+#include "streams.h"
+#include "clientversion.h"
 
 #include <assert.h>
 
@@ -58,7 +61,6 @@ static Checkpoints::MapCheckpoints mapCheckpoints =
 	(47    , uint256("000000cf41c058aedac94c7293d3db5717c1d7223cdbed969653eb3df7a6af21"))
         (463   , uint256("000000d6dbd353db653f295d89b378e2624894eb2aade701e5e1451f7bc46b93"));
 
-
 static const Checkpoints::CCheckpointData data = {
     &mapCheckpoints,
     1526335012, // * UNIX timestamp of last checkpoint block
@@ -69,6 +71,7 @@ static const Checkpoints::CCheckpointData data = {
 
 static Checkpoints::MapCheckpoints mapCheckpointsTestnet =
     boost::assign::map_list_of(0, uint256("0x001"));
+
 static const Checkpoints::CCheckpointData dataTestnet = {
     &mapCheckpointsTestnet,
     1525482708,
@@ -82,6 +85,15 @@ static const Checkpoints::CCheckpointData dataRegtest = {
     1525482708,
     0,
     100};
+
+libzerocoin::ZerocoinParams* CChainParams::Zerocoin_Params() const
+{
+    assert(this);
+    static CBigNum bnTrustedModulus(zerocoinModulus);
+    static libzerocoin::ZerocoinParams ZCParams = libzerocoin::ZerocoinParams(bnTrustedModulus);
+
+    return &ZCParams;
+}
 
 class CMainParams : public CChainParams
 {
@@ -102,8 +114,8 @@ public:
         vAlertPubKey = ParseHex("04621f9882ab9dc7f316b30385e4695f2b686470ff11dd0e4a62866d4d084e2bfff546ed46a2330c806e464dea584fa6e4ddb75ccc8b1abef170b0ee060a4f1bf1");
         nDefaultPort = 18051;
         bnProofOfWorkLimit = ~uint256(0) >> 20; // OPCoinX starting difficulty is 1 / 2^12
+        bnProofOfStakeLimit = (~uint256(0) >> 24);
         nSubsidyHalvingInterval = 210000;
-        nMaxReorganizationDepth = 30;
         nEnforceBlockUpgradeMajority = 750;
         nRejectBlockOutdatedMajority = 950;
         nToCheckBlockUpgradeMajority = 1000;
@@ -119,9 +131,11 @@ public:
         nModifierInterval = 60;
         nModifierIntervalRatio = 3;
         nBudgetPercent = 0;
+        nDevFundPercent = 10;
+        nBudgetPaymentCycle = 60*60*24*30; // 1 month
+        nMaxSuperBlocksPerCycle = 100;
         nMasternodePaymentSigTotal = 10;
         nMasternodePaymentSigRequired = 6;
-        nMasternodeRewardPercent = 75; // % of block reward that goes to masternodes
         nRequiredMasternodeCollateral = 37500 * COIN; //37,500
 
         /**
@@ -155,9 +169,7 @@ public:
 
         vSeeds.push_back(CDNSSeedData("24.21.56.209", "24.21.56.209"));
         vSeeds.push_back(CDNSSeedData("134.255.231.195", "134.255.231.195"));
-	      vSeeds.push_back(CDNSSeedData("149.28.44.76", "149.28.44.76"));
-	      vSeeds.push_back(CDNSSeedData("209.250.236.115", "209.250.236.115"));
-	      vSeeds.push_back(CDNSSeedData("45.76.37.37", "45.76.37.37"));
+        vSeeds.push_back(CDNSSeedData("149.28.44.76", "149.28.44.76"));
         vSeeds.push_back(CDNSSeedData("opc1.freeddns.org", "opc1.freeddns.org"));
         vSeeds.push_back(CDNSSeedData("opc2.freeddns.org", "opc2.freeddns.org"));
 
@@ -177,15 +189,84 @@ public:
         fDefaultConsistencyChecks = false;
         fRequireStandard = true;
         fMineBlocksOnDemand = false;
-        fSkipProofOfWorkCheck = false;
+        fSkipProofOfWorkCheck = true;
         fTestnetToBeDeprecatedFieldRPC = false;
-        fHeadersFirstSyncingActive = false;
-
         nPoolMaxTransactions = 3;
 
         strSporkKey = "04d2b1db171839f074bc85d751dd0663b90faa017f2d78ba9713b7428891204fe462ce11e78d3c3c44c809400fc559ce342a06819851faac636cca72cadd456029";
         strObfuscationPoolDummyAddress = "oe2brxts38pc9ZkraSJc5oE5ki6oeyuGnU";
         nStartMasternodePayments = genesis.nTime + 21600; // 24 hours after genesis creation;
+
+        /** Zerocoin */
+        zerocoinModulus = "25195908475657893494027183240048398571429282126204032027777137836043662020707595556264018525880784"
+            "4069182906412495150821892985591491761845028084891200728449926873928072877767359714183472702618963750149718246911"
+            "6507761337985909570009733045974880842840179742910064245869181719511874612151517265463228221686998754918242243363"
+            "7259085141865462043576798423387184774447920739934236584823824281198163815010674810451660377306056201619676256133"
+            "8441436038339044149526344321901146575444541784240209246165157233507787077498171257724679629263863563732899121548"
+            "31438167899885040445364023527381951378636564391212010397122822120720357";
+        nMaxZerocoinSpendsPerTransaction = 7; // Assume about 20kb each
+        nMinZerocoinMintFee = 1 * COIN;
+        nMintRequiredConfirmations = 20; //the maximum amount of confirmations until accumulated in 19
+        nRequiredAccumulation = 1;
+        nDefaultSecurityLevel = 42; // medium security level for accumulators
+        nBudget_Fee_Confirmations = 6; // Number of confirmations for the finalization fee
+
+        /** Height or Time Based Activations **/
+        nBlockEnforceSerialRange = std::numeric_limits<int>::max(); //Enforce serial range starting this block
+        nBlockRecalculateAccumulators = std::numeric_limits<int>::max(); //Trigger a recalculation of accumulators
+        nBlockFirstFraudulent = std::numeric_limits<int>::max(); //First block that bad serials emerged
+        nBlockLastGoodCheckpoint = std::numeric_limits<int>::max(); //Last valid accumulator checkpoint
+        nBlockEnforceInvalidUTXO = std::numeric_limits<int>::max(); //Start enforcing the invalid UTXO's
+
+        strBootstrapUrl = "https://opcx.info/bootstrap/v1/main";
+    }
+
+    CBitcoinAddress GetDevFundAddress() const
+    { return CBitcoinAddress("DBKqofwU8QUFYFwNYZetyBbj2Y7oAcWLbX"); }
+
+    CBitcoinAddress GetTxFeeAddress() const
+    { return CBitcoinAddress("DEKP7sVxwwuN1mtCpTXtjua77XqFBBRaKG"); }
+
+    CBitcoinAddress GetUnallocatedBudgetAddress() const
+    { return CBitcoinAddress("DE2nWCnyYyWxoUNRg5gEeA7Kx1kpBs2spB"); }
+
+    CBitcoinAddress Get108MAddress() const
+    { return CBitcoinAddress("DAbHsptawrVEgXy4USDzpUjugVYVQCENe1"); }
+
+    int GetChainHeight(ChainHeight ch) const
+    {
+        switch (ch) {
+        case ChainHeight::H1:
+            return 1;
+
+        case ChainHeight::H2:
+            return 151202;
+
+        case ChainHeight::H3:
+            return 302401;
+
+        case ChainHeight::H4:
+            return 388800;
+
+        case ChainHeight::H5:
+            return 5000000;
+
+        case ChainHeight::H6:
+            return 500000;
+
+        case ChainHeight::H7:
+            return 550000;
+
+        case ChainHeight::H8:
+            return 907200;
+
+        case ChainHeight::H9:
+            return 950400;
+
+        default:
+            assert(false);
+            return -1;
+        }
     }
 
     int64_t GetMinStakeAge(int nTargetHeight) const
@@ -222,25 +303,25 @@ public:
         nToCheckBlockUpgradeMajority = 100;
         nMinerThreads = 0;
         nTargetTimespan = 1 * 60; // OPCoinX: 1 hour
-        nTargetSpacing = 1 * 60;  // OPCoinX: 1 hour
+        nTargetSpacing = 1 * 60;
         nPastBlocksMin = 200;
         nLastPOWBlock = 200;
         nMaturity = 15;
-        nMasternodeCountDrift = 4;
         nModifierUpdateBlock = 0; //approx Mon, 17 Apr 2017 04:00:00 GMT
         nMaxMoneyOut = int64_t(3500000000) * COIN;
         nModifierInterval = 60;
         nModifierIntervalRatio = 3;
         nBudgetPercent = 5;
-        nMasternodeRewardPercent = 60; // % of block reward that goes to masternodes
-        nRequiredMasternodeCollateral = 37500 * COIN; //37,500
+        nDevFundPercent = 10;
+        nBudgetPaymentCycle = 60*60*2; // 2 hours
+        nRequiredMasternodeCollateral = 37500 * COIN; //37500
         nMasternodePaymentSigTotal = 10;
         nMasternodePaymentSigRequired = 1;
 
         //! Modify the testnet genesis block so the timestamp is valid for a later start.
         genesis.nTime = 1520769358;
         genesis.nNonce = 823545;
-          
+
         hashGenesisBlock = genesis.GetHash();
         assert(hashGenesisBlock == uint256("0x00000d0a3f1e85d21f9e6bb8a8c6ebc2b994c0ea5e99b2c7f3ceeabf1ef1ccab"));
 
@@ -267,12 +348,85 @@ public:
         fMineBlocksOnDemand = false;
         fSkipProofOfWorkCheck = false;
         fTestnetToBeDeprecatedFieldRPC = true;
-        fHeadersFirstSyncingActive = false;
 
         nPoolMaxTransactions = 3;
         strSporkKey = "046a6ef3c13c172242d6ebfaa95b0a1cdb9d26d15e042c6a2d954fcf4480b03d38b807a5036035fced8385e6e135dee73fc88743481706dc6452b9bbdb897f6a83";
         strObfuscationPoolDummyAddress = "y57cqfGRkekRyDRNeJiLtYVEbvhXrNbmox";
         nStartMasternodePayments = 1420837558; //Fri, 09 Jan 2015 21:05:58 GMT
+        nBudget_Fee_Confirmations = 3; // Number of confirmations for the finalization fee. We have to make this very short
+                                       // here because we only have a 8 block finalization window on testnet
+
+        /** Height or Time Based Activations **/
+        
+        // height at which we start checking the serials (of the spent), duplicates etc.
+        // this should be at our current height (similar to last good checkpoint), but this needs testing
+        //nBlockEnforceSerialRange = 53000; // for next release? this needs testing (not stable / tested)
+        nBlockEnforceSerialRange = std::numeric_limits<int>::max(); //Enforce serial range starting this block
+
+        // some background:
+        // - height at which a recalc of the accu-s will be forced (from the last good checkpoint)
+        // - last-good-check < first-bad-tx < block-recalc < current-height
+        // - Basically, we recalc and filter out the fraudulent outpoint-s (of the spent)
+        // - i.e. this works hand in hand w/ the below first bad tx
+        // the way it should be used:
+        // - we set last-good, first-bad, recalc-block when we want to 'clean up', certain segment, point
+        // - there should be no other checkpoints in between [last-good, block-recalc]
+        // - should be after a while, when we notice first bad-tx-s and we wanna clear those.
+        // (I'm guessing this was introduced w/ the feature, IMO automatic or done occasionally to clean)
+        nBlockRecalculateAccumulators = std::numeric_limits<int>::max(); //Trigger a recalculation of accumulators
+
+        // first bad-tx (spent) height, when we notice it, nothing before (should be maxed out to start w/)
+        // the above (recalcs) won't even start till we set up the first bad-tx height
+        nBlockFirstFraudulent = std::numeric_limits<int>::max(); //First block that bad serials emerged
+
+        // this should be set to whatever is our current height (and until we notice any bad tx-s)
+        nBlockLastGoodCheckpoint = std::numeric_limits<int>::max(); //Last valid accumulator checkpoint
+
+        // similar to the bad-tx above, we should set this when we notice issues (w/ outputs)
+        nBlockEnforceInvalidUTXO = std::numeric_limits<int>::max(); //Start enforcing the invalid UTXO's
+
+        strSporkKey = "026ee678f254a97675a90ebea1e7593fdb53047321f3cb0560966d4202b32c48e2";
+        strBootstrapUrl = "https://opcx.io/bootstrap/v1/test";
+    }
+
+    CBitcoinAddress GetDevFundAddress() const
+    { return CBitcoinAddress("y4XhfKjJPwxi42YRQssbdDytJ74W8V1bVt"); }
+
+    CBitcoinAddress GetTxFeeAddress() const
+    { return CBitcoinAddress("yE8w3zvHtbn7mAFxyKk1UJEX92DWrnqzg6"); }
+
+    CBitcoinAddress GetUnallocatedBudgetAddress() const
+    { return CBitcoinAddress("yBtxR3o3uvbtkfeWLuFqa7o7yY9N1ha4Yn"); }
+
+    CBitcoinAddress Get108MAddress() const
+    { return CBitcoinAddress("xzKVwq9a9fcshaFhQLY1TS7tMbkspRsXjZ"); }
+
+    int GetChainHeight(ChainHeight ch) const
+    {
+        switch (ch) {
+        case ChainHeight::H1:
+            return 1;
+
+        case ChainHeight::H2:
+        case ChainHeight::H3:
+        case ChainHeight::H4:
+            return 35500;
+
+        case ChainHeight::H5:
+        case ChainHeight::H6:
+        case ChainHeight::H7:
+            return 53000;
+
+        case ChainHeight::H8:
+            return 99000;
+
+        case ChainHeight::H9:
+            return 99120;
+
+        default:
+            assert(false);
+            return -1;
+        }
     }
 
     int64_t GetMinStakeAge(int nTargetHeight) const
@@ -377,13 +531,18 @@ public:
 static CUnitTestParams unitTestParams;
 
 
-static CChainParams* pCurrentParams = 0;
+static CChainParams* pCurrentParams = nullptr;
 
 CModifiableParams* ModifiableParams()
 {
     assert(pCurrentParams);
     assert(pCurrentParams == &unitTestParams);
     return (CModifiableParams*)&unitTestParams;
+}
+
+bool ParamsSelected()
+{
+    return pCurrentParams != nullptr;
 }
 
 const CChainParams& Params()
@@ -423,4 +582,56 @@ bool SelectParamsFromCommandLine()
 
     SelectParams(network);
     return true;
+}
+
+uint64_t GetBlockChainSize()
+{
+    const uint64_t GB_BYTES = 1000000000LL;
+    return 2LL * GB_BYTES;
+}
+
+bool VerifyGenesisBlock(const std::string& datadir, const uint256& genesisHash, std::string& err)
+{
+    const string path = strprintf("%s/blocks/blk00000.dat", datadir);
+    FILE *fptr = fopen(path.c_str(), "rb");
+    if (!fptr) {
+        err = strprintf("Failed to open file: %s", path);
+        return false;
+    }
+
+    CAutoFile filein(fptr, SER_DISK, CLIENT_VERSION);
+    if (filein.IsNull()) {
+        err = strprintf("Open block file failed: %s", path);
+        return false;
+    }
+
+    char buf[MESSAGE_START_SIZE] = {0};
+    filein.read(buf, MESSAGE_START_SIZE);
+    if (memcmp(buf, Params().MessageStart(), MESSAGE_START_SIZE)) {
+        err = strprintf("Invalid magic numer %s in the file: %s", HexStr(buf, buf + MESSAGE_START_SIZE), path);
+        return false;
+    }
+
+    unsigned int nSize = 0;
+    filein >> nSize;
+    if (nSize < 80 || nSize > 2000000) {
+        err = strprintf("Invalid block size %u in the file: %s", nSize, path);
+        return false;
+    }
+
+    CBlock block;
+    try {
+        // Read block
+        filein >> block;
+    } catch (std::exception& e) {
+        err = strprintf("Deserialize or I/O error: %s", e.what());
+        return false;
+    }
+
+    // Check block hash
+    if (block.GetHash() != genesisHash) {
+        err = strprintf("Block hash %s does not match genesis block hash %s", block.GetHash().ToString(), genesisHash.ToString());
+        return false;
+    } else
+        return true;
 }

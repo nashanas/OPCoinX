@@ -220,7 +220,10 @@ bool isDust(const QString& address, const CAmount& amount)
     CTxDestination dest = CBitcoinAddress(address.toStdString()).Get();
     CScript script = GetScriptForDestination(dest);
     CTxOut txOut(amount, script);
-    return txOut.IsDust(::minRelayTxFee);
+    bool isdust = txOut.IsDust(::minRelayTxFee);
+    if (isdust)
+        error("isDust: %ld", amount);
+    return isdust; // txOut.IsDust(::minRelayTxFee);
 }
 
 QString HtmlEscape(const QString& str, bool fMultiLine)
@@ -252,6 +255,19 @@ void copyEntryData(QAbstractItemView* view, int column, int role)
         // Copy first item
         setClipboard(selection.at(0).data(role).toString());
     }
+}
+
+QString getEntryData(QAbstractItemView *view, int column, int role)
+{
+    if(!view || !view->selectionModel())
+        return QString();
+    QModelIndexList selection = view->selectionModel()->selectedRows(column);
+
+    if(!selection.isEmpty()) {
+        // Return first item
+        return (selection.at(0).data(role).toString());
+    }
+    return QString();
 }
 
 QString getSaveFileName(QWidget* parent, const QString& caption, const QString& dir, const QString& filter, QString* selectedSuffixOut)
@@ -346,7 +362,7 @@ bool isObscured(QWidget* w)
     return !(checkPoint(QPoint(0, 0), w) && checkPoint(QPoint(w->width() - 1, 0), w) && checkPoint(QPoint(0, w->height() - 1), w) && checkPoint(QPoint(w->width() - 1, w->height() - 1), w) && checkPoint(QPoint(w->width() / 2, w->height() / 2), w));
 }
 
-void openLocalFile(const boost::filesystem::path& p)
+void openFileInTextMode(const boost::filesystem::path& p)
 {
     if (boost::filesystem::exists(p))
 #if defined(Q_OS_MAC)
@@ -358,22 +374,38 @@ void openLocalFile(const boost::filesystem::path& p)
         error("File does not exist: %s", p.string().c_str());
 }
 
+void openFileInDefaultApp(const QString& p)
+{
+    if (boost::filesystem::exists(qstringToBoostPath(p)))
+        QDesktopServices::openUrl(QUrl::fromLocalFile(p));
+    else
+        error("File does not exist: %s", p.toStdString());
+}
+
+void openURL(const QString& url)
+{
+    if (!url.isEmpty())
+        QDesktopServices::openUrl(url);
+    else
+        error("%s - url is empty", __func__);
+}
+
 void openDebugLogfile()
 {
     /* Open debug.log with the associated application */
-    openLocalFile(GetDataDir() / "debug.log");
+    openFileInTextMode(GetDataDir() / "debug.log");
 }
 
 void openConfigfile()
 {
     /* Open OPCoinX.conf with the associated application */
-     openLocalFile(GetConfigFile());
+    openFileInTextMode(GetConfigFile());
 }
 
 void openMNConfigfile()
 {
     /* Open masternode.conf with the associated application */
-    openLocalFile(GetMasternodeConfigFile());
+    openFileInTextMode(GetMasternodeConfigFile());
 }
 
 void showBackups()
@@ -713,6 +745,8 @@ bool SetStartOnSystemStartup(bool fAutoStart)
 
 
 #elif defined(Q_OS_MAC)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 // based on: https://github.com/Mozketo/LaunchAtLoginController/blob/master/LaunchAtLoginController.m
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -727,7 +761,18 @@ LSSharedFileListItemRef findStartupItemInList(LSSharedFileListRef list, CFURLRef
         LSSharedFileListItemRef item = (LSSharedFileListItemRef)CFArrayGetValueAtIndex(listSnapshot, i);
         UInt32 resolutionFlags = kLSSharedFileListNoUserInteraction | kLSSharedFileListDoNotMountVolumes;
         CFURLRef currentItemURL = NULL;
+
+#if defined(MAC_OS_X_VERSION_MAX_ALLOWED) && MAC_OS_X_VERSION_MAX_ALLOWED >= 10100
+    if(&LSSharedFileListItemCopyResolvedURL)
+        currentItemURL = LSSharedFileListItemCopyResolvedURL(item, resolutionFlags, NULL);
+#if defined(MAC_OS_X_VERSION_MIN_REQUIRED) && MAC_OS_X_VERSION_MIN_REQUIRED < 10100
+    else
         LSSharedFileListItemResolve(item, resolutionFlags, &currentItemURL, NULL);
+#endif
+#else
+    LSSharedFileListItemResolve(item, resolutionFlags, &currentItemURL, NULL);
+#endif
+
         if (currentItemURL && CFEqual(currentItemURL, findUrl)) {
             // found
             CFRelease(currentItemURL);
@@ -763,6 +808,7 @@ bool SetStartOnSystemStartup(bool fAutoStart)
     }
     return true;
 }
+#pragma GCC diagnostic pop
 #else
 
 bool GetStartOnSystemStartup()
@@ -917,6 +963,11 @@ QString formatServicesStr(quint64 mask)
 QString formatPingTime(double dPingTime)
 {
     return dPingTime == 0 ? QObject::tr("N/A") : QString(QObject::tr("%1 ms")).arg(QString::number((int)(dPingTime * 1000), 10));
+}
+
+QString formatTimeOffset(int64_t nTimeOffset)
+{
+  return QString(QObject::tr("%1 s")).arg(QString::number((int)nTimeOffset, 10));
 }
 
 } // namespace GUIUtil

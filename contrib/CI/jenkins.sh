@@ -3,7 +3,8 @@
 #
 # variables
 #
-commit=0
+commit=""
+branch="none"
 
 #
 # functions
@@ -32,18 +33,35 @@ print_log()
 
 copy_build_out()
 {
+    dir="${RELEASEDIR}/$commit/$1" # $1 first param, platform name
+    echo "Creating release directory: $dir"
+    mkdir -p $dir
+
+    echo "Copying log files..."
+    tar cvzf $dir/install.log.tar.gz var/install.log
+    tar cvzf $dir/build.log.tar.gz var/build.log
+
     if [[ 0 -lt $(ls build/out/opcx-* 2>/dev/null | wc -w) ]]
     then
-        now=$(date +"%Y-%m-%d")
-        dir="${RELEASEDIR}/$now/$commit/$1" # $1 first param, platform name
-        echo "Creating release directory: $dir"
-        mkdir -p $dir
         echo "Copying files to release directory..."
         mv build/out/* $dir
+
+        # check build.log for warnings
+        warning=`grep 'warning generated' var/build.log`
+        if [[ ! -z "$warning" ]]
+        then
+            echo "$1: $warning" >> "${RELEASEDIR}/$commit/warnings.txt"
+        fi
     else
         echo "build/out does not contain required files, looks like build failed."
         echo `ls -l build/out`
     fi
+}
+
+update_index()
+{
+    now=$(date +"%Y-%m-%d %H:%M:%S")
+    echo "$now,$branch,$commit" >> "${RELEASEDIR}/index.csv"
 }
 
 #
@@ -52,6 +70,13 @@ copy_build_out()
 
 set -e
 echo 'Build started...'
+
+if [[ -z "${RELEASEDIR}" ]]
+then
+    echo "Release dir is not specified, exit."
+    echo "Set release dir in the environment variable: RELEASEDIR"
+    exit 1
+fi
 
 if [[ ! -e 'bin/make-base-vm' ]]
 then
@@ -62,7 +87,7 @@ fi
 if [[ ! -e 'OPCoinX' ]]
 then
     echo "Clonning git repository..."
-    git clone https://github.com/opcoinx/OPCoinX.git
+    git clone https://github.com/OPCoinX/OPCoinX.git 
 else
     echo "Updating git repository..."
     pushd `pwd`
@@ -77,6 +102,7 @@ then
     pushd `pwd`
     cd OPCoinX
     git checkout "${BRANCH}"
+    git pull
     popd
 fi
 
@@ -86,10 +112,16 @@ then
     pushd `pwd`
     cd OPCoinX
     commit=`git rev-parse HEAD`
+    branch=`git rev-parse --abbrev-ref HEAD`
     popd
 else
     echo "Commit variable is specified, COMMIT=${COMMIT}"
     commit="${COMMIT}"
+    pushd `pwd`
+    cd OPCoinX
+    git checkout "$commit"
+    branch=`git rev-parse --abbrev-ref HEAD`
+    popd
 fi
 
 echo "Commit hash to build from is: $commit, len=${#commit}"
@@ -101,11 +133,10 @@ else
     exit 1
 fi
 
-if [[ -z "${RELEASEDIR}" ]]
+if [[ -e "${RELEASEDIR}/$commit" ]]
 then
-    echo "Release dir is not specified, exit."
-    echo "Set release dir in the environment variable: RELEASEDIR"
-    exit 1
+    echo 'Current revision has already built: $commit. See release dir: ${RELEASEDIR}. Stop.'
+    exit 0
 fi
 
 if [[ -e 'base-trusty-amd64' ]]
@@ -157,4 +188,5 @@ bin/gbuild --commit OPCoinX=$commit  OPCoinX/contrib/gitian-descriptors/gitian-w
 copy_build_out "win"
 print_log
 
+update_index
 echo 'Done'

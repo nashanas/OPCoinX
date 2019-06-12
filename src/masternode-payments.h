@@ -1,8 +1,8 @@
-
-
 // Copyright (c) 2014-2015 The Dash developers
+// Copyright (c) 2015-2017 The PIVX developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 #ifndef MASTERNODE_PAYMENTS_H
 #define MASTERNODE_PAYMENTS_H
 
@@ -10,8 +10,6 @@
 #include "main.h"
 #include "masternode.h"
 #include <boost/lexical_cast.hpp>
-
-using namespace std;
 
 extern CCriticalSection cs_vecPayments;
 extern CCriticalSection cs_mapMasternodeBlocks;
@@ -24,11 +22,11 @@ class CMasternodeBlockPayees;
 extern CMasternodePayments masternodePayments;
 
 void ProcessMessageMasternodePayments(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
-bool IsBlockPayeeValid(const CBlock& block, int nBlockHeight, CAmount nFees);
+bool IsBlockPayeeValid(const CBlock& block, int nBlockHeight, CAmount nFees, CBlockIndex* pindexPrev);
 std::string GetRequiredPaymentsString(int nBlockHeight);
-bool IsBlockValueValid(const CBlock& block, CAmount nExpectedValue, CAmount nMinted);
-void FillBlockPayee(CMutableTransaction& txNew, CAmount nFees, bool fProofOfStake);
-
+bool IsBlockValueValid(const CBlock& block, int nBlockHeight, CAmount nExpectedValue, CAmount nMinted, CBlockIndex* pindexPrev);
+void FillBlockPayee(CMutableTransaction& txNew, CAmount nFees, bool fProofOfStake, CBlockIndex* pindexPrev);
+CAmount FindPayment(const CTransaction& tx, const string& address);
 void DumpMasternodePayments();
 
 /** Save Masternode Payment Data (mnpayments.dat)
@@ -142,7 +140,7 @@ public:
         return false;
     }
 
-    bool IsTransactionValid(const CTransaction& txNew, CAmount nFees);
+    bool IsTransactionValid(const CTransaction& txNew, int nBlockVersion);
     std::string GetRequiredPaymentsString();
 
     ADD_SERIALIZE_METHODS;
@@ -259,7 +257,7 @@ public:
     int LastPayment(CMasternode& mn);
 
     bool GetBlockPayee(int nBlockHeight, CScript& payee);
-    bool IsTransactionValid(const CTransaction& txNew, int nBlockHeight, CAmount nFees);
+    bool IsTransactionValid(const CTransaction& txNew, int nBlockVersion, int nBlockHeight);
     bool IsScheduled(CMasternode& mn, int nNotBlockHeight);
 
     bool CanVote(COutPoint outMasternode, int nBlockHeight)
@@ -280,7 +278,7 @@ public:
     int GetMinMasternodePaymentsProto();
     void ProcessMessageMasternodePayments(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
     std::string GetRequiredPaymentsString(int nBlockHeight);
-    void FillBlockPayee(CMutableTransaction& txNew, int64_t nFees, bool fProofOfStake);
+    void FillBlockPayee(CMutableTransaction& txNew, int64_t nFees, bool fProofOfStake, CBlockIndex* pindexPrev);
     std::string ToString() const;
     int GetOldestBlock();
     int GetNewestBlock();

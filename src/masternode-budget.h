@@ -1,8 +1,8 @@
 // Copyright (c) 2014-2015 The Dash developers
 // Copyright (c) 2015-2017 The PIVX developers
-
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 #ifndef MASTERNODE_BUDGET_H
 #define MASTERNODE_BUDGET_H
 
@@ -31,22 +31,27 @@ class CTxBudgetPayment;
 #define VOTE_YES 1
 #define VOTE_NO 2
 
-static const CAmount PROPOSAL_FEE_TX = (50 * COIN);
-static const CAmount BUDGET_FEE_TX = (50 * COIN);
-static const int64_t BUDGET_FEE_CONFIRMATIONS = 6;
 static const int64_t BUDGET_VOTE_UPDATE_MIN = 60 * 60;
 
 extern std::vector<CBudgetProposalBroadcast> vecImmatureBudgetProposals;
 extern std::vector<CFinalizedBudgetBroadcast> vecImmatureFinalizedBudgets;
 
 extern CBudgetManager budget;
+
+// Save data on disk
 void DumpBudgets();
 
 // Define amount of blocks in budget payment cycle
 int GetBudgetPaymentCycleBlocks();
 
+// Define amount of blocks before payment when budget finalization runs
+int GetBudgetFinalizationBlocks();
+
+// Define amount of the budget fee
+CAmount GetBudgetFee(int nBudgetBlockStart);
+
 //Check the collateral transaction for the budget proposal/finalized budget
-bool IsBudgetCollateralValid(uint256 nTxCollateralHash, uint256 nExpectedHash, std::string& strError, int64_t& nTime, int& nConf);
+bool IsBudgetCollateralValid(uint256 nTxCollateralHash, uint256 nExpectedHash, int nBudgetBlockStart, std::string& strError, int64_t& nTime, int& nConf);
 
 //
 // CBudgetVote - Allow a masternode node to vote and broadcast throughout the network
@@ -165,6 +170,9 @@ public:
     CBudgetDB();
     bool Write(const CBudgetManager& objToSave);
     ReadResult Read(CBudgetManager& objToLoad, bool fDryRun = false);
+
+private:
+    ReadResult ReadINTERNAL(CBudgetManager& objToLoad, bool fDryRun = false);
 };
 
 
@@ -222,7 +230,8 @@ public:
     CFinalizedBudget* FindFinalizedBudget(uint256 nHash);
     std::pair<std::string, std::string> GetVotes(std::string strProposalName);
 
-    CAmount GetTotalBudget(int nHeight);
+    CAmount GetTotalBudget(int nHeight) const;
+    CAmount GetTotalDevFund(int nHeight) const;
     std::vector<CBudgetProposal*> GetBudget();
     std::vector<CBudgetProposal*> GetAllProposals();
     std::vector<CFinalizedBudget*> GetFinalizedBudgets();
@@ -230,15 +239,19 @@ public:
     bool AddProposal(CBudgetProposal& budgetProposal);
     bool AddFinalizedBudget(CFinalizedBudget& finalizedBudget);
     void SubmitFinalBudget();
-    bool HasNextFinalizedBudget();
+    //bool HasNextFinalizedBudget();
 
     bool UpdateProposal(CBudgetVote& vote, CNode* pfrom, std::string& strError);
     bool UpdateFinalizedBudget(CFinalizedBudgetVote& vote, CNode* pfrom, std::string& strError);
     bool PropExists(uint256 nHash);
-    bool IsTransactionValid(const CTransaction& txNew, int nBlockHeight);
+    bool IsTransactionValid(const CTransaction& txNew, int nBlockHeight, CBlockIndex* pindexPrev);
+    bool IsTransactionValidBeforeH8(const CTransaction& txNew, int nBlockHeight, CBlockIndex* pindexPrev);
     std::string GetRequiredPaymentsString(int nBlockHeight);
-    void FillBlockPayee(CMutableTransaction& txNew, CAmount nFees, bool fProofOfStake);
-
+    void FillBlockPayee(CMutableTransaction& txNew, CAmount nFees, bool fProofOfStake, CBlockIndex* pindexPrev);
+    int GrabHighestCount(int nTargetHeight, CScript& payee, CAmount& nAmount) const;
+    std::vector<std::pair<CScript, CAmount>> FindBudgetPayments(int nTargetHeight) const;
+    CAmount GetBudgetValue(int nTargetHeight, CBlockIndex* pindexPrev) const;
+    CAmount GetPaidBudgetValue(int nTargetHeight, CBlockIndex* pindexPrev) const;
     void CheckOrphanVotes();
     void Clear()
     {
@@ -332,12 +345,13 @@ public:
 
     bool IsValid(std::string& strError, bool fCheckCollateral = true);
 
-    std::string GetName() { return strBudgetName; }
+    std::string GetName() const { return strBudgetName; }
     std::string GetProposals();
-    int GetBlockStart() { return nBlockStart; }
-    int GetBlockEnd() { return nBlockStart + (int)(vecBudgetPayments.size() - 1); }
-    int GetVoteCount() { return (int)mapVotes.size(); }
+    int GetBlockStart() const { return nBlockStart; }
+    int GetBlockEnd() const { return nBlockStart + (int)(vecBudgetPayments.size() - 1); }
+    int GetVoteCount() const { return (int)mapVotes.size(); }
     bool IsTransactionValid(const CTransaction& txNew, int nBlockHeight);
+
     bool GetBudgetPaymentByBlock(int64_t nBlockHeight, CTxBudgetPayment& payment)
     {
         LOCK(cs);
@@ -348,7 +362,8 @@ public:
         payment = vecBudgetPayments[i];
         return true;
     }
-    bool GetPayeeAndAmount(int64_t nBlockHeight, CScript& payee, CAmount& nAmount)
+
+    bool GetPayeeAndAmount(int64_t nBlockHeight, CScript& payee, CAmount& nAmount) const
     {
         LOCK(cs);
 
@@ -490,34 +505,34 @@ public:
 
     bool IsEstablished()
     {
-        //Proposals must be at least a day old to make it into a budget
+        // Proposals must be at least a day old to make it into a budget
         if (Params().NetworkID() == CBaseChainParams::MAIN) return (nTime < GetTime() - (60 * 60 * 24));
 
-        //for testing purposes - 4 hours
+        // For testing purposes - 5 minutes
         return (nTime < GetTime() - (60 * 5));
     }
 
-    std::string GetName() { return strProposalName; }
-    std::string GetURL() { return strURL; }
-    int GetBlockStart() { return nBlockStart; }
-    int GetBlockEnd() { return nBlockEnd; }
-    CScript GetPayee() { return address; }
-    int GetTotalPaymentCount();
-    int GetRemainingPaymentCount();
-    int GetBlockStartCycle();
-    int GetBlockCurrentCycle();
-    int GetBlockEndCycle();
+    std::string GetName() const { return strProposalName; }
+    std::string GetURL() const { return strURL; }
+    int GetBlockStart() const { return nBlockStart; }
+    int GetBlockEnd() const { return nBlockEnd; }
+    CScript GetPayee() const { return address; }
+    int GetTotalPaymentCount() const;
+    int GetRemainingPaymentCount() const;
+    int GetBlockStartCycle() const;
+    int GetBlockCurrentCycle() const;
+    int GetBlockEndCycle() const;
     double GetRatio();
-    int GetYeas();
-    int GetNays();
-    int GetAbstains();
-    CAmount GetAmount() { return nAmount; }
+    int GetYeas() const;
+    int GetNays() const;
+    int GetAbstains() const;
+    CAmount GetAmount() const { return nAmount; }
     void SetAllotted(CAmount nAllotedIn) { nAlloted = nAllotedIn; }
     CAmount GetAllotted() { return nAlloted; }
 
     void CleanAndRemove(bool fSignatureCheck);
 
-    uint256 GetHash()
+    uint256 GetHash() const
     {
         CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
         ss << strProposalName;

@@ -1,3 +1,7 @@
+// Copyright (c) 2014-2016 The Dash developers
+// Copyright (c) 2015-2017 The PIVX developers
+// Distributed under the MIT/X11 software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "activemasternode.h"
 #include "addrman.h"
@@ -8,7 +12,7 @@
 #include "spork.h"
 
 //
-// Bootup the Masternode, look for a 10000 OPCoinX input and register on the network
+// Bootup the Masternode, look for a 10M OPCoinX input and register on the network
 //
 void CActiveMasternode::ManageStatus()
 {
@@ -32,7 +36,8 @@ void CActiveMasternode::ManageStatus()
         pmn = mnodeman.Find(pubKeyMasternode);
         if (pmn != NULL) {
             pmn->Check();
-            if (pmn->IsEnabled() && pmn->protocolVersion == PROTOCOL_VERSION) EnableHotColdMasterNode(pmn->vin, pmn->addr);
+            if (pmn->IsEnabled() && pmn->protocolVersion >= ActiveProtocol())
+                EnableHotColdMasterNode(pmn->vin, pmn->addr);
         }
     }
 
@@ -63,21 +68,13 @@ void CActiveMasternode::ManageStatus()
             service = CService(strMasterNodeAddr);
         }
 
-        if (Params().NetworkID() == CBaseChainParams::MAIN) {
-            if (service.GetPort() != Params().GetDefaultPort()) {
-                notCapableReason = strprintf("Invalid port: %u - only Params().GetDefaultPort() is supported on mainnet.", service.GetPort());
-                LogPrintf("CActiveMasternode::ManageStatus() - not capable: %s\n", notCapableReason);
-                return;
-            }
-        } else if (service.GetPort() == Params().GetDefaultPort()) {
-            notCapableReason = strprintf("Invalid port: %u - Params().GetDefaultPort() is only supported on mainnet.", service.GetPort());
-            LogPrintf("CActiveMasternode::ManageStatus() - not capable: %s\n", notCapableReason);
+        if (!CMasternodeBroadcast::CheckDefaultPort(strMasterNodeAddr, errorMessage, "CActiveMasternode::ManageStatus()"))
             return;
-        }
 
         LogPrintf("CActiveMasternode::ManageStatus() - Checking inbound connection to '%s'\n", service.ToString());
 
-        CNode* pnode = ConnectNode((CAddress)service, NULL, false);
+        // DS: fix remote IP resolving as local IP when starting hot masternode
+        CNode* pnode = ConnectNode((CAddress)service, service.ToString().c_str(), false);
         if (!pnode) {
             notCapableReason = "Could not connect to " + service.ToString();
             LogPrintf("CActiveMasternode::ManageStatus() - not capable: %s\n", notCapableReason);
@@ -262,17 +259,8 @@ bool CActiveMasternode::Register(std::string strService, std::string strKeyMaste
     }
 
     CService service = CService(strService);
-    if (Params().NetworkID() == CBaseChainParams::MAIN) {
-        if (service.GetPort() != Params().GetDefaultPort()) {
-            errorMessage = strprintf("Invalid port %u for masternode %s - only Params().GetDefaultPort() is supported on mainnet.", service.GetPort(), strService);
-            LogPrintf("CActiveMasternode::Register() - %s\n", errorMessage);
-            return false;
-        }
-    } else if (service.GetPort() == Params().GetDefaultPort()) {
-        errorMessage = strprintf("Invalid port %u for masternode %s - Params().GetDefaultPort() is only supported on mainnet.", service.GetPort(), strService);
-        LogPrintf("CActiveMasternode::Register() - %s\n", errorMessage);
+    if(!CMasternodeBroadcast::CheckDefaultPort(strService, errorMessage, "CActiveMasternode::Register()"))
         return false;
-    }
 
     addrman.Add(CAddress(service), CNetAddr("127.0.0.1"), 2 * 60 * 60);
 
@@ -281,7 +269,6 @@ bool CActiveMasternode::Register(std::string strService, std::string strKeyMaste
 
 bool CActiveMasternode::Register(CTxIn vin, CService service, CKey keyCollateralAddress, CPubKey pubKeyCollateralAddress, CKey keyMasternode, CPubKey pubKeyMasternode, std::string& errorMessage)
 {
-    CMasternodeBroadcast mnb;
     CMasternodePing mnp(vin);
     if (!mnp.Sign(keyMasternode, pubKeyMasternode)) {
         errorMessage = strprintf("Failed to sign ping, vin: %s", vin.ToString());
@@ -291,7 +278,9 @@ bool CActiveMasternode::Register(CTxIn vin, CService service, CKey keyCollateral
     mnodeman.mapSeenMasternodePing.insert(make_pair(mnp.GetHash(), mnp));
 
     LogPrintf("CActiveMasternode::Register() - Adding to Masternode list\n    service: %s\n    vin: %s\n", service.ToString(), vin.ToString());
-    mnb = CMasternodeBroadcast(service, vin, pubKeyCollateralAddress, pubKeyMasternode, PROTOCOL_VERSION);
+
+    CMasternode* pmn = mnodeman.Find(vin);
+    CMasternodeBroadcast mnb = CMasternodeBroadcast(service, vin, pubKeyCollateralAddress, pubKeyMasternode, pmn ? pmn->protocolVersion : PROTOCOL_VERSION);
     mnb.lastPing = mnp;
     if (!mnb.Sign(keyCollateralAddress)) {
         errorMessage = strprintf("Failed to sign broadcast, vin: %s", vin.ToString());
@@ -301,7 +290,6 @@ bool CActiveMasternode::Register(CTxIn vin, CService service, CKey keyCollateral
     mnodeman.mapSeenMasternodeBroadcast.insert(make_pair(mnb.GetHash(), mnb));
     masternodeSync.AddedMasternodeList(mnb.GetHash());
 
-    CMasternode* pmn = mnodeman.Find(vin);
     if (pmn == NULL) {
         CMasternode mn(mnb);
         mnodeman.Add(mn);

@@ -1,5 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2014 The Bitcoin developers
+// Copyright (c) 2015-2017 The PIVX developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -25,11 +26,11 @@ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHead
         return Params().ProofOfWorkLimit().GetCompact();
     }
 
-    uint256 bnTargetLimit = (~uint256(0) >> 24);
-    int64_t nTargetSpacing = 60;
-    int64_t nTargetTimespan = 60 * 40;
+    uint256 bnTargetLimit = Params().ProofOfStakeLimit();
+    int64_t nTargetSpacing = Params().TargetSpacing();
+    int64_t nTargetTimespan = Params().TargetTimespan();
 
-    int64_t nActualSpacing = 60;
+    int64_t nActualSpacing = Params().TargetSpacing();
     if (pindexLast->nHeight != 0)
         nActualSpacing = pindexLast->GetBlockTime() - pindexLast->pprev->GetBlockTime();
 

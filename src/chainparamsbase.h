@@ -10,7 +10,7 @@
 
 /**
  * CBaseChainParams defines the base parameters (shared between opcx-cli and opcxd)
- * of a given instance of the Pivx system.
+ * of a given instance of the OPCX system.
  */
 class CBaseChainParams
 {

@@ -8,16 +8,18 @@ Script that installs docker-ce: `setup_docker_debian.sh`
 
 ### Build&Run OPCX docker container
 
-Pre: `OPCoinX.conf MUST be available under link OPCX_CONF_URL as pointed out in the Dockerfile`
+Build container: `sudo docker build --no-cache --tag opcx .`
 
-Build container: `sudo docker build --tag opcx:1.0.0 .`
+Run container: `sudo docker run -d --name opcx.cont opcx`
 
-Run container: `docker run -d --name opcx.cont opcx:1.0.0`
+Start container: `sudo docker start opcx.cont`
 
-See if it is up: `docker ps -a`
+See if it is up: `sudo docker ps -a`
 
-Shell in the container: `docker exec -it opcx.cont /bin/bash`
+Shell in the container: `sudo docker exec -it opcx.cont /bin/bash`
 
-Test RPC: `opcx-cli -rpcuser=opcx -rpcpassword=<from config file> help`
+Test RPC (shell inside container): `opcx-cli help` or `opcx-cli getinfo`
 
-Stop container: `docker stop opcx.cont`
+Stop container: `sudo docker stop opcx.cont`
+
+Delete container: `sudo docker rm opcx.cont`

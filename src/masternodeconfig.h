@@ -1,4 +1,3 @@
-
 // Copyright (c) 2014-2015 The Dash developers
 // Copyright (c) 2015-2017 The PIVX developers
 // Distributed under the MIT/X11 software license, see the accompanying
@@ -9,9 +8,12 @@
 
 #include <string>
 #include <vector>
+#include <memory>
 
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
+
+#include "sync.h"
 
 class CMasternodeConfig;
 extern CMasternodeConfig masternodeConfig;
@@ -29,6 +31,8 @@ public:
         std::string outputIndex;
 
     public:
+        CMasternodeEntry() {}
+
         CMasternodeEntry(std::string alias, std::string ip, std::string privKey, std::string txHash, std::string outputIndex)
         {
             this->alias = alias;
@@ -89,33 +93,34 @@ public:
         {
             this->ip = ip;
         }
+
+        bool isValid() const {
+            return !alias.empty() && !ip.empty() && !txHash.empty() && !privKey.empty() && !outputIndex.empty();
+        }
     };
 
-    CMasternodeConfig()
-    {
-        entries = std::vector<CMasternodeEntry>();
-    }
+    CMasternodeConfig();
 
-    void clear();
     bool read(std::string& strErr);
-    void add(std::string alias, std::string ip, std::string privKey, std::string txHash, std::string outputIndex);
 
-    std::vector<CMasternodeEntry>& getEntries()
-    {
-        return entries;
-    }
+    std::vector<CMasternodeEntry> getEntries() const;
 
-    int getCount()
-    {
-        int c = -1;
-        BOOST_FOREACH (CMasternodeEntry e, entries) {
-            if (e.getAlias() != "") c++;
-        }
-        return c;
-    }
+    int getCount() const;
+
+    bool addEntry(const CMasternodeEntry& entry);
+
+    bool deleteEntry(int index);
+
+    bool deleteEntry(const std::string& alias);
+
+    CMasternodeEntry findEntry(const std::string& alias);
 
 private:
-    std::vector<CMasternodeEntry> entries;
+    bool writeConfig() const;
+
+private:
+    std::vector<CMasternodeEntry> entries_;
+    std::unique_ptr<CCriticalSection> csEntries_;
 };
 
 

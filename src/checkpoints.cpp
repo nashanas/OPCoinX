@@ -27,7 +27,7 @@ static const double SIGCHECK_VERIFICATION_FACTOR = 5.0;
 
 bool fEnabled = true;
 
-bool CheckBlock(int nHeight, const uint256& hash)
+bool CheckBlock(int nHeight, const uint256& hash, bool fMatchesCheckpoint)
 {
     if (!fEnabled)
         return true;
@@ -35,7 +35,8 @@ bool CheckBlock(int nHeight, const uint256& hash)
     const MapCheckpoints& checkpoints = *Params().Checkpoints().mapCheckpoints;
 
     MapCheckpoints::const_iterator i = checkpoints.find(nHeight);
-    if (i == checkpoints.end()) return true;
+    // If looking for an exact match, then return false
+    if (i == checkpoints.end()) return !fMatchesCheckpoint;
     return hash == i->second;
 }
 
@@ -96,6 +97,21 @@ CBlockIndex* GetLastCheckpoint()
             return t->second;
     }
     return NULL;
+}
+
+bool ActiveChainOnFork()
+{
+    if (!fEnabled)
+        return false;
+
+    const MapCheckpoints& checkpoints = *Params().Checkpoints().mapCheckpoints;
+
+    BOOST_REVERSE_FOREACH (const MapCheckpoints::value_type& i, checkpoints) {
+        if (chainActive.Height() >= i.first && chainActive[i.first])
+            return chainActive[i.first]->GetBlockHash() != i.second;
+    }
+
+    return false;
 }
 
 } // namespace Checkpoints
