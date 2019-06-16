@@ -262,51 +262,7 @@ bool IsBlockPayeeValid(const CBlock& block, int nBlockHeight, CAmount nFees, CBl
         }
     }
 
-    bool feeValid = true;
-    if (nFees > 0 && nBlockHeight >= Params().GetChainHeight(ChainHeight::H4)) {
-        CAmount nAmount = FindPayment(txNew, Params().GetTxFeeAddress().ToString());
-        if (0 == nAmount) {
-            feeValid = false;
-            error("%s: fee payment to the dev fund address was not found\n", __func__);
-        } else
-            feeValid = nAmount >= nFees;
-
-        if (!feeValid) {
-            error("%s: invalid fee payment detected, expected %s, payed %s, tx:\n%s\n",
-                  __func__, FormatMoney(nFees), FormatMoney(nAmount), txNew.ToString().c_str());
-
-            if (IsSporkActive(SPORK_17_FEE_PAYMENT_ENFORCEMENT))
-                return false;
-            else {
-                LogPrintf("Fee enforcement is disabled, accepting block %d\n", nBlockHeight);
-                feeValid = true;
-            }
-        }
-    }
-
-    bool fundValid = true;
-    if (nBlockHeight >= Params().GetChainHeight(ChainHeight::H4) && nBlockHeight < Params().GetChainHeight(ChainHeight::H8)) {
-        CAmount nAmount = FindPayment(txNew, Params().GetDevFundAddress().ToString());
-        if (0 == nAmount) {
-            fundValid = false;
-            error("%s: required payment to the dev fund address was not found\n", __func__);
-        } else
-            fundValid = nAmount >= GetBlockValueDevFund(nBlockHeight);
-
-        if (!fundValid) {
-            error("%s: invalid dev fund payment detected, expected %s, payed %s, tx:\n%s\n",
-                  __func__, FormatMoney(GetBlockValueDevFund(nBlockHeight)), FormatMoney(nAmount), txNew.ToString().c_str());
-
-            if (IsSporkActive(SPORK_18_DEVFUND_PAYMENT_ENFORCEMENT))
-                return false;
-            else {
-                LogPrintf("Dev fund enforcement is disabled, accepting block %d\n", nBlockHeight);
-                fundValid = true;
-            }
-        }
-    }
-
-    return budgetValid && mnValid && feeValid && fundValid;
+    return budgetValid && mnValid;
 }
 
 static bool SubtractFromStakeReward(CMutableTransaction& tx, int nStakeOut, CAmount nAmount, string& error)
@@ -361,21 +317,6 @@ void FillBlockPayee(CMutableTransaction& txNew, CAmount nFees, bool fProofOfStak
         budget.FillBlockPayee(txNew, nFees, fProofOfStake, pindexPrev);
     else
         masternodePayments.FillBlockPayee(txNew, nFees, fProofOfStake, pindexPrev);
-
-    if (nTargetHeight < Params().GetChainHeight(ChainHeight::H8)) {
-        //Append an additional output as the dev fund payment to the official Developer Fund Address
-        const CAmount nDevfundPayment = GetBlockValueDevFund(nTargetHeight);
-        if (nDevfundPayment > 0) {
-            string msg;
-            if (SubtractFromStakeReward(txNew, nStakeOut, nDevfundPayment, msg))
-                txNew.vout.push_back(CTxOut(nDevfundPayment, GetScriptForDestination(Params().GetDevFundAddress().Get())));
-            else
-                error("%s: %s", __func__, msg);
-        }
-    }
-
-    if (nFees > 0) //Append an additional output as the tx fee payment to the official Developer Fund Address
-        txNew.vout.push_back(CTxOut(nFees, GetScriptForDestination(Params().GetTxFeeAddress().Get())));
 }
 
 std::string GetRequiredPaymentsString(int nBlockHeight)
